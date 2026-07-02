@@ -1,0 +1,8 @@
+# your paths here
+[env]
+CC = "C:\\LLVM-19\\bin\\clang-cl.exe"
+CXX = "C:\\LLVM-19\\bin\\clang-cl.exe"
+LIBCLANG_PATH = "C:\\LLVM-19\\lib"
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"

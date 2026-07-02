@@ -1,14 +1,9 @@
-use crate::kcl::ObjData;
-use bevy::{
-    asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
-};
-use std::fs;
+use bevy::{asset::RenderAssetUsages, prelude::*, render::render_resource::PrimitiveTopology};
 
 mod kcl;
 mod utils;
 
 // example brought down to the essentials from here: https://bevy.org/examples/3d-rendering/generate-custom-mesh/
-// right now i want to check out how to actually render vertices in space for a simple KCL viewer
 
 #[derive(Component)]
 struct MainCamera;
@@ -26,12 +21,24 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let raw = fs::read("test/course.kcl").expect("Failed to read KCL file");
-    let data = kcl::kcl_to_obj(&raw).expect("Failed to parse KCL file");
-    let object = kcl::parse_obj(&data.obj).expect("Failed to parse OBJ data");
+    let archive = brres::Archive::from_path("test/course_model.brres").unwrap();
+
+    let vertex_data = archive
+        .models
+        .iter()
+        .flat_map(|model| model.positions.iter())
+        .flat_map(|buffer| buffer.data.iter().cloned())
+        .collect();
+
+    let normal_data = archive
+        .models
+        .iter()
+        .flat_map(|model| model.normals.iter())
+        .flat_map(|buffer| buffer.data.iter().cloned())
+        .collect();
 
     // Create and save a handle to the mesh.
-    let mesh_handle: Handle<Mesh> = meshes.add(create_kcl_mesh(&object));
+    let mesh_handle: Handle<Mesh> = meshes.add(create_mesh(vertex_data, normal_data));
 
     commands.spawn((
         Mesh3d(mesh_handle),
@@ -42,30 +49,53 @@ fn setup(
     ));
 
     commands.spawn((Camera3d::default(), MainCamera));
-    commands.spawn((PointLight::default(), Transform::from_xyz(1.0, 1.0, 1.0).looking_at(Vec3::ZERO, Vec3::Y)));
+    commands.spawn((
+        PointLight::default(),
+        Transform::from_xyz(1.0, 1.0, 1.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
 }
 
-fn create_kcl_mesh(obj: &ObjData) -> Mesh {
+fn create_mesh(vert: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>) -> Mesh {
     Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, obj.vertices.clone())
-    .with_inserted_indices(Indices::U32(
-        obj.faces
-            .iter()
-            .flat_map(|face| face.iter().map(|&index| index as u32))
-            .collect(),
-    ))
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vert)
     .with_computed_normals()
 }
 
 fn camera_movement(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&MainCamera, &mut Transform)>,
+    mut query: Query<&mut Transform, With<MainCamera>>,
 ) {
-    for (cam, mut transform) in &mut query {
+    for mut transform in &mut query {
+        let mut rot = Vec2::ZERO;
+
+        if keys.pressed(KeyCode::ArrowLeft) {
+            rot.x += 1.0;
+        }
+        if keys.pressed(KeyCode::ArrowRight) {
+            rot.x -= 1.0;
+        }
+        if keys.pressed(KeyCode::ArrowUp) {
+            rot.y += 1.0;
+        }
+        if keys.pressed(KeyCode::ArrowDown) {
+            rot.y -= 1.0;
+        }
+
+        if rot != Vec2::ZERO {
+            let sensitivity = 2.0;
+            let yaw = rot.x * sensitivity * time.delta_secs();
+            let pitch = rot.y * sensitivity * time.delta_secs();
+
+            let yaw_quat = Quat::from_rotation_y(yaw);
+            let pitch_quat = Quat::from_rotation_x(pitch);
+            transform.rotation = yaw_quat * transform.rotation;
+            transform.rotation = transform.rotation * pitch_quat;
+        }
+
         let mut dir = Vec3::ZERO;
         let forward = transform.forward();
         let right = transform.right();
@@ -88,7 +118,7 @@ fn camera_movement(
             dir -= Vec3::Y;
         }
         if dir != Vec3::ZERO {
-            // 10000 as a temporary hardcoded speed
+            // hardcoded 10000 for now
             transform.translation += dir.normalize() * 10000.0 * time.delta_secs();
         }
     }
