@@ -1,7 +1,7 @@
+use bevy::mesh::Indices;
 use bevy::{asset::RenderAssetUsages, prelude::*, render::render_resource::PrimitiveTopology};
-
-mod kcl;
-mod utils;
+use brres::{MatrixPrimitive, VertexNormalBuffer, VertexPositionBuffer, };
+use brres::Mesh as BrresMesh;
 
 // example brought down to the essentials from here: https://bevy.org/examples/3d-rendering/generate-custom-mesh/
 
@@ -16,6 +16,48 @@ fn main() {
         .run();
 }
 
+
+// https://github.com/snailspeed3/RiiStudio/blob/master/source/librii/gx/Vertex.hpp#L155
+pub enum PrimitiveType {
+    Quads,
+    Quads2,
+    Triangles,
+    TriangleStrip,
+    TriangleFan,
+    Lines,
+    LineStrip,
+    Points,
+}
+
+impl PrimitiveType {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            0 => PrimitiveType::Quads,
+            1 => PrimitiveType::Quads2,
+            2 => PrimitiveType::Triangles,
+            3 => PrimitiveType::TriangleStrip,
+            4 => PrimitiveType::TriangleFan,
+            5 => PrimitiveType::Lines,
+            6 => PrimitiveType::LineStrip,
+            7 => PrimitiveType::Points,
+            _ => panic!("Unknown primitive type: {}", value),
+        }
+    }
+
+    fn to_hex(&self) -> u8 {
+        match self {
+            PrimitiveType::Quads => 0x80,
+            PrimitiveType::Quads2 => 0x88,
+            PrimitiveType::Triangles => 0x90,
+            PrimitiveType::TriangleStrip => 0x98,
+            PrimitiveType::TriangleFan => 0xA0,
+            PrimitiveType::Lines => 0xA8,
+            PrimitiveType::LineStrip => 0xB0,
+            PrimitiveType::Points => 0xB8,
+        }
+    }
+}
+
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -23,22 +65,38 @@ fn setup(
 ) {
     let archive = brres::Archive::from_path("test/course_model.brres").unwrap();
 
-    let vertex_data = archive
-        .models
+    let models = &archive.models;
+
+    let pos_bufs: Vec<VertexPositionBuffer> = models
         .iter()
-        .flat_map(|model| model.positions.iter())
-        .flat_map(|buffer| buffer.data.iter().cloned())
+        .flat_map(|model| model.positions.clone())
         .collect();
 
-    let normal_data = archive
-        .models
+    let nrm_bufs: Vec<VertexNormalBuffer> = models
         .iter()
-        .flat_map(|model| model.normals.iter())
-        .flat_map(|buffer| buffer.data.iter().cloned())
+        .flat_map(|model| model.normals.clone())
         .collect();
 
-    // Create and save a handle to the mesh.
-    let mesh_handle: Handle<Mesh> = meshes.add(create_mesh(vertex_data, normal_data));
+    let brres_meshes: Vec<BrresMesh> = models
+        .iter()
+        .flat_map(|model| model.meshes.clone())
+        .collect();
+
+    // first mesh for now
+    let mesh = &brres_meshes[0];
+
+    let primitives = decode_matrix_primitive(&mesh);
+
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+
+    for prim in primitives {
+        println!("{:02x}", prim.prim_type.to_hex());
+        // handle primitive types
+    }
+
+    let mesh_handle = meshes.add(create_mesh(positions, normals, indices));
 
     commands.spawn((
         Mesh3d(mesh_handle),
@@ -53,15 +111,61 @@ fn setup(
         PointLight::default(),
         Transform::from_xyz(1.0, 1.0, 1.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+    
 }
 
-fn create_mesh(vert: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>) -> Mesh {
-    Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vert)
-    .with_computed_normals()
+#[derive(Clone)]
+pub struct IndexedVertex {
+    pub indices: [u16; 26],
+}
+
+pub struct Primitive {
+    pub prim_type: PrimitiveType,
+    pub vertices: Vec<IndexedVertex>,
+}
+
+// function translated and modified to rust from the python example (while returning what i need)
+fn decode_matrix_primitive(mesh: &BrresMesh) -> Vec<Primitive> {
+    let mut primitives = Vec::new();
+    
+    for mprim in &mesh.mprims {
+        let buf = &mprim.vertex_data_buffer;
+        let mut cursor = 0;
+        
+        while cursor + 4 <= buf.len() {
+            let prim_type = buf[cursor];
+            let prim_vtx_count = ((buf[cursor + 1] as u32) << 16)
+                | ((buf[cursor + 2] as u32) << 8)
+                | (buf[cursor + 3] as u32);
+            cursor += 4;
+            
+            if prim_vtx_count == 0 || cursor + (prim_vtx_count as usize * 52) > buf.len() {
+                break;
+            }
+            
+            let mut vertices = Vec::new();
+            
+            for _ in 0..prim_vtx_count {
+                let mut indices = [0u16; 26];
+                for i in 0..26 {
+                    indices[i] = (buf[cursor] as u16) | ((buf[cursor + 1] as u16) << 8);
+                    cursor += 2;
+                }
+                vertices.push(IndexedVertex { indices });
+            }
+            
+            primitives.push(Primitive { prim_type: PrimitiveType::from_u8(prim_type), vertices });
+        }
+    }
+    
+    primitives
+}
+
+fn create_mesh(pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, idx: Vec<u32>) -> Mesh {
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
+        .with_inserted_indices(Indices::U32(idx))
 }
 
 fn camera_movement(
